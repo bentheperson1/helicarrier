@@ -1,7 +1,9 @@
 from pymavlink import mavutil
 import time
 
-master = mavutil.mavlink_connection("/dev/ttyAMA0", baud=115200)
+# Connect through mavlink-router (it owns /dev/ttyAMA0). source_system=200
+# avoids clashing with Mission Planner/QGC, which use system ID 255.
+master = mavutil.mavlink_connection("tcp:127.0.0.1:5760", source_system=200)
 
 master.wait_heartbeat()
 print("Heartbeat received from system (system %u component %u)" % 
