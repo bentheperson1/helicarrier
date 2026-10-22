@@ -93,3 +93,35 @@ master = mavutil.mavlink_connection("tcp:127.0.0.1:5760", source_system=200)
   `pymavlink` needs to be installed (in a venv: `python3 -m venv ~/venv && ~/venv/bin/pip install pymavlink`).
 - `PreArm: Check mag field` appears indoors — needs an outdoor compass calibration before flying.
 - Field operation: the Pi needs to host its own hotspot when no router is available.
+
+## Ground control app (`ground_control/`)
+
+Desktop app (PySide6) that connects to the drone through mavlink-router.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python ground_control/app.py
+```
+
+Connect to `tcp:megadrone.local:5760` (or `tcp:<pi-ip>:5760`).
+
+| File | What it does |
+|---|---|
+| `app.py` | Main window: connection bar, telemetry, servo panel, log, map |
+| `mavlink_manager.py` | Background MAVLink thread; parses telemetry, runs queued commands |
+| `map_view.py` | Leaflet map: drone marker (rotates with heading), flight trail, follow/center |
+| `servo_panel.py` | Sends `MAV_CMD_DO_SET_SERVO` and shows the live output PWM (`SERVO_OUTPUT_RAW`) |
+| `web/` | Bundled Leaflet, so the map works offline (imagery tiles still need internet) |
+
+### Servo control notes
+
+- Servos plug into the **flight controller's** output pins. The command goes
+  GCS → mavlink-router on the Pi → FC. Output # matches the FC's `SERVOn` numbering
+  (on most Pixhawk-style boards, AUX1 = output 9).
+- ArduPilot **refuses** outputs assigned to motors (returns `MAV_RESULT_FAILED`). For the
+  servo's output, set `SERVOn_FUNCTION = 0` (Disabled) so the FC accepts `DO_SET_SERVO`.
+- If outputs don't move, check the safety switch (`BRD_SAFETY_DEFLT = 0` disables it on the bench).
+- **Remove props before testing.** The app asks for confirmation if the drone is armed.
+

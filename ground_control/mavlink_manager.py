@@ -1,8 +1,12 @@
+import math
 import threading
 import time
 from queue import Queue, Empty
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
+import os
+# MAVLink 2 message definitions: needed for servo outputs 9-16 (AUX pins) and other extension fields
+os.environ.setdefault("MAVLINK20", "1")
 from pymavlink import mavutil
 
 class MavlinkWorker(QObject):
@@ -59,7 +63,10 @@ class MavlinkWorker(QObject):
 			deadline = time.monotonic() + 10
 			while time.monotonic() < deadline and not self.stop_event.is_set():
 				hb = self.master.recv_match(type = "HEARTBEAT", blocking = True, timeout = 0.5)
-				if hb is not None:
+				# through mavlink-router we also see heartbeats from other ground
+				# stations (QGC, Mission Planner), so skip anything that isn't an autopilot
+				if hb is not None and hb.type != mavutil.mavlink.MAV_TYPE_GCS \
+						and hb.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID:
 					self.master.target_system = hb.get_srcSystem()
 					self.master.target_component = hb.get_srcComponent()
 					self.last_heartbeat_rx = time.monotonic()
@@ -103,8 +110,12 @@ class MavlinkWorker(QObject):
 		msg_type = msg.get_type()
 		
 		if msg_type == "HEARTBEAT":
+			# ignore heartbeats from other GCSes / components on the link
+			if msg.get_srcSystem() != self.master.target_system or \
+					msg.get_srcComponent() != self.master.target_component:
+				return
 			self.last_heartbeat_rx = time.monotonic()
-			self.telemetry["mode"] = msg.custom_mode
+			self.telemetry["mode"] = mavutil.mode_string_v10(msg)
 			self.telemetry["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 		elif msg_type == "GLOBAL_POSITION_INT":
 			self.telemetry["lat"] = msg.lat / 1e7
@@ -114,13 +125,23 @@ class MavlinkWorker(QObject):
 			self.telemetry["roll"] = msg.roll
 			self.telemetry["pitch"] = msg.pitch
 			self.telemetry["yaw"] = msg.yaw
+			self.telemetry["heading"] = math.degrees(msg.yaw) % 360
+		elif msg_type == "GPS_RAW_INT":
+			self.telemetry["gps_fix"] = msg.fix_type
+			self.telemetry["gps_sats"] = msg.satellites_visible
+		elif msg_type == "SERVO_OUTPUT_RAW" and msg.port == 0:
+			self.telemetry["servo_outputs"] = {
+				i: getattr(msg, f"servo{i}_raw", 0) for i in range(1, 17)
+			}
 		elif msg_type == "SYS_STATUS":
 			self.telemetry["battery_v"] = msg.voltage_battery / 1000
 		elif msg_type == "COMMAND_ACK":
 			result_enum = mavutil.mavlink.enums["MAV_RESULT"].get(msg.result)
 			result = result_enum.name if result_enum else str(msg.result)
+			command_enum = mavutil.mavlink.enums["MAV_CMD"].get(msg.command)
+			command = command_enum.name if command_enum else str(msg.command)
 			
-			self.log_message.emit(f"Command {msg.command} ack: {result}")
+			self.log_message.emit(f"{command} ack: {result}")
 		elif msg_type == "STATUSTEXT":
 			self.log_message.emit(f"FC: {msg.text}")
 	
@@ -185,9 +206,16 @@ class LinkController(QObject):
 		
 		self.worker.state_changed.connect(self.on_worker_state)
 		self.worker.telemetry_updated.connect(self.telemetry_updated)
-		self.worker.error_occurred.connect(self.error_occurred)
 		
 		self.mavlink_worker_thread.start()
+	
+	# thread-safe: queue a callable(master) to run on the MAVLink thread
+	def send_command(self, command_callable):
+		if self.worker is None:
+			self.error_occurred.emit("Not connected")
+			return False
+		self.worker.send_command(command_callable)
+		return True
 	
 	def disconnect_link(self):
 		if self.worker is not None:
