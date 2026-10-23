@@ -1,15 +1,19 @@
+import json
 import os
 
 from PySide6.QtCore import QUrl, Slot
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+import tile_cache
 
 # Leaflet map rendered inside Qt's embedded browser. Python pushes updates
 # into the page by calling the JS functions defined below (updateDrone, etc).
 # Leaflet is bundled in ground_control/web/ so the map, drone marker, and trail
-# work offline (e.g. on the Pi's hotspot at the field). Only the background
-# imagery tiles need internet; without it the map is blank but still tracks.
+# work offline (e.g. on the Pi's hotspot at the field). Background imagery goes
+# through tile_cache.py, which saves every tile to disk, so anything you looked at
+# while you had internet still shows up after switching to the drone's network.
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 MAP_HTML = """
 <!DOCTYPE html>
@@ -42,12 +46,12 @@ MAP_HTML = """
 	const map = L.map("map", { zoomControl: true }).setView([32.9857, -96.7502], 16);
 
 	const satellite = L.tileLayer(
-		"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+		"gcstile:esri/{z}/{x}/{y}",
 		{ maxZoom: 20, maxNativeZoom: 19, attribution: "Tiles &copy; Esri" }
 	);
 	const streets = L.tileLayer(
-		"https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-		{ maxZoom: 20, attribution: "&copy; OpenStreetMap contributors &copy; CARTO" }
+		"gcstile:carto/{z}/{x}/{y}",
+		{ maxZoom: 20, maxNativeZoom: 19, attribution: "&copy; OpenStreetMap contributors &copy; CARTO" }
 	);
 	satellite.addTo(map);
 	L.control.layers({ "Satellite": satellite, "Streets": streets }).addTo(map);
@@ -96,6 +100,14 @@ MAP_HTML = """
 		el.style.display = text ? "block" : "none";
 	}
 
+	function areaInfo() {
+		const b = map.getBounds();
+		return JSON.stringify({
+			south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast(),
+			zoom: map.getZoom(), provider: map.hasLayer(streets) ? "carto" : "esri"
+		});
+	}
+
 	function setFollow(on) { follow = on; }
 	function clearTrail() { trail.setLatLngs([]); }
 	function centerOnDrone() { if (marker) map.setView(marker.getLatLng(), Math.max(map.getZoom(), 17)); }
@@ -105,9 +117,27 @@ MAP_HTML = """
 """
 
 
+_tile_cache = None
+
+
+def install_tile_cache():
+	"""One cache + handler for the whole app, on the shared browser profile."""
+	global _tile_cache
+	if _tile_cache is None:
+		_tile_cache = tile_cache.TileCache()
+		handler = tile_cache.TileSchemeHandler(_tile_cache)
+		QWebEngineProfile.defaultProfile().installUrlSchemeHandler(tile_cache.SCHEME, handler)
+		_tile_cache.handler = handler  # keep it alive
+	return _tile_cache
+
+
 class MapView(QWidget):
 	def __init__(self):
 		super().__init__()
+		
+		self.cache = install_tile_cache()
+		self.cache.prefetch_progress.connect(self.on_prefetch_progress)
+		self.cache.prefetch_finished.connect(self.on_prefetch_finished)
 
 		self.page_ready = False
 		self.pending_js = []
@@ -125,22 +155,81 @@ class MapView(QWidget):
 		self.center_button = QPushButton("Center")
 		self.clear_button = QPushButton("Clear trail")
 		self.gps_label = QLabel("GPS: -")
+		self.save_area_button = QPushButton("Save area offline")
+		self.save_area_button.setToolTip(
+			"Download map imagery for the area on screen (plus a few zoom levels)\n"
+			"so it still shows after you switch to the drone's Wi-Fi."
+		)
+		self.offline_label = QLabel()
+		self.update_offline_label()
 
 		controls = QHBoxLayout()
 		controls.addWidget(self.gps_label, 1)
 		controls.addWidget(self.follow_checkbox)
 		controls.addWidget(self.center_button)
 		controls.addWidget(self.clear_button)
+		
+		offline_row = QHBoxLayout()
+		offline_row.addWidget(self.offline_label, 1)
+		offline_row.addWidget(self.save_area_button)
 
 		layout = QVBoxLayout()
 		layout.setContentsMargins(0, 0, 0, 0)
 		layout.addLayout(controls)
 		layout.addWidget(self.web, 1)
+		layout.addLayout(offline_row)
 		self.setLayout(layout)
 
 		self.follow_checkbox.toggled.connect(lambda on: self.run_js(f"setFollow({'true' if on else 'false'})"))
 		self.center_button.clicked.connect(lambda: self.run_js("centerOnDrone()"))
 		self.clear_button.clicked.connect(lambda: self.run_js("clearTrail()"))
+		self.save_area_button.clicked.connect(self.on_save_area_clicked)
+	
+	def update_offline_label(self, extra = ""):
+		count = self.cache.cached_count()
+		self.offline_label.setText(f"Offline map: {count} tiles saved{extra}")
+	
+	def on_save_area_clicked(self):
+		if self.page_ready:
+			# wrap in a lambda: PySide6 silently drops bound-method callbacks here
+			self.web.page().runJavaScript("areaInfo()", 0, lambda result: self.start_prefetch(result))
+	
+	def start_prefetch(self, result):
+		if not result:
+			return
+		area = json.loads(result)
+		zoom = int(area["zoom"])
+		zoom_min = max(zoom - 2, 3)
+		zoom_max = min(zoom + 2, 19)
+		
+		# go as deep as we can without exceeding the tile limit
+		while True:
+			tiles = tile_cache.tiles_for_area(
+				area["south"], area["west"], area["north"], area["east"], zoom_min, zoom_max
+			)
+			if len(tiles) <= tile_cache.MAX_PREFETCH_TILES or zoom_max <= zoom:
+				break
+			zoom_max -= 1
+		
+		if len(tiles) > tile_cache.MAX_PREFETCH_TILES:
+			self.update_offline_label(" (area too big: zoom in closer to the field, then try again)")
+			return
+		
+		self.save_area_button.setEnabled(False)
+		self.update_offline_label(f"  |  saving zoom {zoom_min}-{zoom_max}...")
+		self.cache.prefetch(area["provider"], tiles)
+	
+	def on_prefetch_progress(self, done, total, failed):
+		self.offline_label.setText(f"Saving map: {done}/{total} tiles" + (f" ({failed} failed)" if failed else ""))
+	
+	def on_prefetch_finished(self, saved, failed):
+		self.save_area_button.setEnabled(True)
+		if failed and not saved:
+			self.update_offline_label("  |  couldn't download (no internet?)")
+		elif failed:
+			self.update_offline_label(f"  |  saved {saved}, {failed} failed")
+		else:
+			self.update_offline_label(f"  |  area saved ({saved} new)")
 
 	@Slot(bool)
 	def on_load_finished(self, ok):

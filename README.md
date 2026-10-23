@@ -109,9 +109,11 @@ Connect to `tcp:megadrone.local:5760` (or `tcp:<pi-ip>:5760`).
 
 | File | What it does |
 |---|---|
-| `app.py` | Main window: connection bar, telemetry, servo panel, log, map |
+| `app.py` | Main window: connection bar, **Flight** tab (telemetry, servo panel, log, map) and **Preflight** tab |
 | `mavlink_manager.py` | Background MAVLink thread; parses telemetry, runs queued commands |
-| `map_view.py` | Leaflet map: drone marker (rotates with heading), flight trail, follow/center |
+| `map_view.py` | Leaflet map: drone marker (rotates with heading), flight trail, follow/center, save area offline |
+| `tile_cache.py` | Saves every map tile to `~/.megadrone_gcs/tiles/` so the map works without internet |
+| `preflight.py` | Preflight tab: each check has its own Run button; thresholds at the top of the file |
 | `servo_panel.py` | Sends `MAV_CMD_DO_SET_SERVO` and shows the live output PWM (`SERVO_OUTPUT_RAW`) |
 | `web/` | Bundled Leaflet, so the map works offline (imagery tiles still need internet) |
 
@@ -124,4 +126,21 @@ Connect to `tcp:megadrone.local:5760` (or `tcp:<pi-ip>:5760`).
   servo's output, set `SERVOn_FUNCTION = 0` (Disabled) so the FC accepts `DO_SET_SERVO`.
 - If outputs don't move, check the safety switch (`BRD_SAFETY_DEFLT = 0` disables it on the bench).
 - **Remove props before testing.** The app asks for confirmation if the drone is armed.
+
+### Map at the field (no internet on the drone's Wi-Fi)
+
+1. On school Wi-Fi, open ground control and pan/zoom over the flying area,
+   or zoom to the field and click **Save area offline** (saves a few zoom levels around it).
+2. Switch the laptop to the drone's network and connect. The saved imagery stays, and the
+   drone is drawn on top of it. Tiles are kept between app restarts.
+
+### Preflight tab
+
+Each automatic check (link, disarmed, battery, GPS, EKF, sensors, ArduPilot pre-arm, level,
+RC, failsafe settings, flight mode) has its own **Run** button and shows PASS / WARN / FAIL,
+the reason, and the time it was checked. Set the **battery cell count** at the top.
+Manual items (props, strap, area clear...) are ticked individually.
+The log on the Flight tab records every mode change and arm/disarm with a timestamp.
+
+See `docs/FAILSAFE_TESTS.md` for the failsafe test procedure.
 

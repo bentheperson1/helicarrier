@@ -70,6 +70,7 @@ class MavlinkWorker(QObject):
 					self.master.target_system = hb.get_srcSystem()
 					self.master.target_component = hb.get_srcComponent()
 					self.last_heartbeat_rx = time.monotonic()
+					self.request_streams()
 					return True
 			
 			self.error_occurred.emit("No heartbeat received")
@@ -115,6 +116,9 @@ class MavlinkWorker(QObject):
 					msg.get_srcComponent() != self.master.target_component:
 				return
 			self.last_heartbeat_rx = time.monotonic()
+			self.telemetry["hb_time"] = self.last_heartbeat_rx
+			self.telemetry["autopilot"] = msg.autopilot
+			self.telemetry["vehicle_type"] = msg.type
 			self.telemetry["mode"] = mavutil.mode_string_v10(msg)
 			self.telemetry["armed"] = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 		elif msg_type == "GLOBAL_POSITION_INT":
@@ -129,12 +133,31 @@ class MavlinkWorker(QObject):
 		elif msg_type == "GPS_RAW_INT":
 			self.telemetry["gps_fix"] = msg.fix_type
 			self.telemetry["gps_sats"] = msg.satellites_visible
+			self.telemetry["gps_hdop"] = msg.eph / 100 if msg.eph != 65535 else None
 		elif msg_type == "SERVO_OUTPUT_RAW" and msg.port == 0:
 			self.telemetry["servo_outputs"] = {
 				i: getattr(msg, f"servo{i}_raw", 0) for i in range(1, 17)
 			}
 		elif msg_type == "SYS_STATUS":
 			self.telemetry["battery_v"] = msg.voltage_battery / 1000
+			self.telemetry["battery_pct"] = msg.battery_remaining  # -1 = unknown
+			self.telemetry["sensors_present"] = msg.onboard_control_sensors_present
+			self.telemetry["sensors_enabled"] = msg.onboard_control_sensors_enabled
+			self.telemetry["sensors_health"] = msg.onboard_control_sensors_health
+		elif msg_type == "EKF_STATUS_REPORT":
+			self.telemetry["ekf_flags"] = msg.flags
+			self.telemetry["ekf_vel_var"] = msg.velocity_variance
+			self.telemetry["ekf_pos_var"] = msg.pos_horiz_variance
+			self.telemetry["ekf_compass_var"] = msg.compass_variance
+		elif msg_type == "RC_CHANNELS":
+			self.telemetry["rc_count"] = msg.chancount
+			self.telemetry["rc_rssi"] = msg.rssi
+			self.telemetry["rc_throttle"] = msg.chan3_raw
+		elif msg_type == "PARAM_VALUE":
+			# copy-on-write so the GUI thread never sees a dict that's being changed
+			params = dict(self.telemetry.get("params", {}))
+			params[msg.param_id.rstrip("\x00")] = msg.param_value
+			self.telemetry["params"] = params
 		elif msg_type == "COMMAND_ACK":
 			result_enum = mavutil.mavlink.enums["MAV_RESULT"].get(msg.result)
 			result = result_enum.name if result_enum else str(msg.result)
@@ -144,6 +167,18 @@ class MavlinkWorker(QObject):
 			self.log_message.emit(f"{command} ack: {result}")
 		elif msg_type == "STATUSTEXT":
 			self.log_message.emit(f"FC: {msg.text}")
+			if msg.text.startswith(("PreArm", "Arm")):
+				recent = list(self.telemetry.get("prearm_msgs", []))[-9:]
+				recent.append((time.monotonic(), msg.text))
+				self.telemetry["prearm_msgs"] = recent
+	
+	def request_streams(self):
+		# ask ArduPilot to stream all telemetry at 4 Hz on this link; otherwise what we
+		# get depends on the SRx_ parameters for whichever FC port the Pi is plugged into
+		self.master.mav.request_data_stream_send(
+			self.master.target_system, self.master.target_component,
+			mavutil.mavlink.MAV_DATA_STREAM_ALL, 4, 1
+		)
 	
 	def send_gcs_heartbeat(self):
 		self.master.mav.heartbeat_send(

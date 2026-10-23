@@ -5,6 +5,8 @@ from PySide6.QtWidgets import *
 from mavlink_manager import LinkController
 from map_view import MapView
 from servo_panel import ServoPanel, make_set_servo_command
+from preflight import PreflightPage
+import time
 
 class MainWindow(QMainWindow):
 	def __init__(self):
@@ -15,6 +17,8 @@ class MainWindow(QMainWindow):
 		
 		self.link = LinkController()
 		self.is_active = False
+		self.last_mode = None
+		self.last_armed = None
 		
 		self.build_ui()
 		self.connect_signals()
@@ -42,6 +46,7 @@ class MainWindow(QMainWindow):
 		
 		self.servo_panel = ServoPanel()
 		self.map_view = MapView()
+		self.preflight_page = PreflightPage()
 		
 		self.log_box = QPlainTextEdit()
 		self.log_box.setReadOnly(True)
@@ -78,9 +83,13 @@ class MainWindow(QMainWindow):
 		splitter.setStretchFactor(1, 1)
 		splitter.setSizes([480, 920])
 		
+		self.tabs = QTabWidget()
+		self.tabs.addTab(splitter, "Flight")
+		self.tabs.addTab(self.preflight_page, "Preflight")
+		
 		layout = QVBoxLayout()
 		layout.addLayout(top_row)
-		layout.addWidget(splitter, 1)
+		layout.addWidget(self.tabs, 1)
 		
 		central = QWidget()
 		central.setLayout(layout)
@@ -95,6 +104,7 @@ class MainWindow(QMainWindow):
 		self.link.log_message.connect(self.on_error)
 		
 		self.servo_panel.servo_command.connect(self.on_servo_command)
+		self.preflight_page.params_requested.connect(self.on_params_requested)
 	
 	def on_connect_clicked(self):
 		if self.is_active:
@@ -130,12 +140,23 @@ class MainWindow(QMainWindow):
 		self.baud_input.setEnabled(not self.is_active)
 		
 		self.servo_panel.set_link_active(state == "connected")
+		self.preflight_page.on_link_state(state)
+		if state != "connected":
+			self.last_mode = None
+			self.last_armed = None
 	
 	def on_telemetry(self, t):
 		if "mode" in t:
 			self.mode_label.setText(str(t["mode"]))
+			# log every mode change, e.g. a failsafe switching to RTL or LAND
+			if self.last_mode is not None and t["mode"] != self.last_mode:
+				self.log(f"MODE: {self.last_mode} -> {t['mode']}")
+			self.last_mode = t["mode"]
 		if "armed" in t:
 			self.armed_label.setText("Yes" if t["armed"] else "No")
+			if self.last_armed is not None and t["armed"] != self.last_armed:
+				self.log("ARMED" if t["armed"] else "DISARMED")
+			self.last_armed = t["armed"]
 		if "lat" in t:
 			self.position_label.setText(f"{t['lat']:.6f}, {t['lon']:.6f}")
 		if "alt" in t:
@@ -150,6 +171,18 @@ class MainWindow(QMainWindow):
 		
 		self.map_view.update_telemetry(t)
 		self.servo_panel.update_telemetry(t)
+		self.preflight_page.update_telemetry(t)
+	
+	def on_params_requested(self, names):
+		def request(master):
+			for name in names:
+				master.mav.param_request_read_send(
+					master.target_system, master.target_component, name.encode(), -1
+				)
+		self.link.send_command(request)
+	
+	def log(self, text):
+		self.log_box.appendPlainText(f"{time.strftime('%H:%M:%S')}  {text}")
 	
 	def on_servo_command(self, channel, pwm):
 		if self.armed_label.text() == "Yes":
@@ -164,7 +197,7 @@ class MainWindow(QMainWindow):
 			self.on_error(f"Sent DO_SET_SERVO: output {channel} -> {pwm} µs")
 	
 	def on_error(self, text):
-		self.log_box.appendPlainText(text)
+		self.log(text)
 	
 	def closeEvent(self, event):
 		self.link.shutdown()
