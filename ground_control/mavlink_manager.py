@@ -9,6 +9,8 @@ import os
 os.environ.setdefault("MAVLINK20", "1")
 from pymavlink import mavutil
 
+from mission_phase import PHASE_VALUE_NAMES
+
 class MavlinkWorker(QObject):
 	state_changed = Signal(str)
 	telemetry_updated = Signal(dict)
@@ -158,6 +160,14 @@ class MavlinkWorker(QObject):
 			params = dict(self.telemetry.get("params", {}))
 			params[msg.param_id.rstrip("\x00")] = msg.param_value
 			self.telemetry["params"] = params
+		elif msg_type == "NAMED_VALUE_INT":
+			key = PHASE_VALUE_NAMES.get(msg.name.rstrip("\x00"))
+			if key is not None:
+				self.telemetry[key] = bool(msg.value) if key == "phase_ready" else msg.value
+				self.telemetry["phase_time"] = time.monotonic()
+				# the phase logic may run on a companion computer, not the FC,
+				# so advance requests go back to whoever is sending these
+				self.telemetry["phase_source"] = (msg.get_srcSystem(), msg.get_srcComponent())
 		elif msg_type == "COMMAND_ACK":
 			result_enum = mavutil.mavlink.enums["MAV_RESULT"].get(msg.result)
 			result = result_enum.name if result_enum else str(msg.result)

@@ -315,7 +315,7 @@ class PreflightPage(QWidget):
 	# emitted with a list of parameter names the page needs read from the FC
 	params_requested = Signal(list)
 
-	def __init__(self):
+	def __init__(self, cells_key = "battery_cells"):
 		super().__init__()
 
 		self.latest = {}
@@ -324,8 +324,8 @@ class PreflightPage(QWidget):
 		self.cells_input = QSpinBox()
 		self.cells_input.setRange(1, 14)
 		self.cells_input.setSuffix(" S")
-		self.cells_input.setValue(int(self.store.value("battery_cells", 6)))
-		self.cells_input.valueChanged.connect(lambda v: self.store.setValue("battery_cells", v))
+		self.cells_input.setValue(int(self.store.value(cells_key, 6)))
+		self.cells_input.valueChanged.connect(lambda v: self.store.setValue(cells_key, v))
 
 		self.run_all_button = QPushButton("Run all automatic checks")
 		self.reset_button = QPushButton("Reset")
