@@ -2,7 +2,7 @@ import asyncio
 import json
 import websockets
 
-ros_url = "wss://ros-gaa-1793260697.dexisim.io"
+ros_url = "wss://ros-dgrab-1793394110.dexisim.io"
 
 param_service = "/mission_node/set_parameters"
 param_service_type = "rcl_interfaces/srv/SetParameters"
