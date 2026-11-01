@@ -1,0 +1,20 @@
+# Starts the GPS WebSocket server on boot.
+# Install on each drone's Pi (change --name to that drone, and the path/user if different):
+#   sudo cp config/gps-ws.service /etc/systemd/system/gps-ws.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gps-ws
+#   journalctl -u gps-ws -f
+[Unit]
+Description=Drone GPS WebSocket server
+After=network-online.target mavlink-router.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pilot/helicarrier/onboard/gps_ws_server.py --name megadrone --mavlink tcp:127.0.0.1:5760 --port 8765
+WorkingDirectory=/home/pilot/helicarrier/onboard
+User=pilot
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
