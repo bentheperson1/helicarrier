@@ -146,56 +146,33 @@ See `docs/FAILSAFE_TESTS.md` for the failsafe test procedure.
 
 ## Drone-to-drone GPS sharing (`onboard/`)
 
-Each drone's Pi runs a small WebSocket server that broadcasts its GPS/telemetry as JSON
-(~5 times a second). The other drone, ground control, or any laptop can connect to it.
-Standard library only, so nothing needs installing on the Pi.
+`onboard/gps_ws_server.py` reads `GPS_RAW_INT` from the flight controller with pymavlink and
+publishes it as JSON on a WebSocket server (`ws://<pi>:8765`), one message per GPS update:
 
-| File | What it does |
-|---|---|
-| `onboard/gps_ws_server.py` | Reads MAVLink from the flight controller, serves `ws://<pi>:8765` (live) and `http://<pi>:8765/` (latest JSON once) |
-| `onboard/peer_client.py` | Connects to the other drone's server; prints its position, and distance/bearing if `--self` is given. `subscribe()` can be imported into other code |
-| `onboard/ws_lite.py` | Minimal WebSocket implementation used by both |
-| `config/gps-ws.service` | Starts the server on boot |
+```json
+{"drone": "megadrone", "time": 1793565426.9, "lat": 32.99376, "lon": -96.75371, "alt": 180.0, "fix_type": 3, "satellites": 18}
+```
 
-### Set up on each drone's Pi
+Setup on the Pi (needs internet once for pip):
 
 ```bash
-cd ~/helicarrier && git pull                       # or copy the onboard/ folder over with scp
-python3 onboard/gps_ws_server.py --name megadrone   # quick test; Ctrl+C to stop
-curl http://localhost:8765/                         # in a second terminal: should print JSON
+python3 -m venv ~/venv
+~/venv/bin/pip install pymavlink websockets
+~/venv/bin/python ~/helicarrier/onboard/gps_ws_server.py --name megadrone
 ```
 
-`--mavlink` says where the server reads MAVLink from:
-- **Megadrone:** default `tcp:127.0.0.1:5760` (mavlink-router).
-- **DEXI:** depends on how MAVLink reaches its Pi. If it runs mavlink-router, use its TCP port;
-  if the FC streams UDP to the Pi, use `udpin:0.0.0.0:<port>` with a port nothing else is using.
+On another drone, pass `--mavlink` with that drone's connection string (same format as pymavlink).
+To start it on boot, use `config/gps-ws.service` (instructions are at the top of that file).
 
-Start on boot (edit `--name`/`--mavlink`, and the path/user if different, in the service file first):
+Reading it from the other drone:
 
-```bash
-sudo cp config/gps-ws.service /etc/systemd/system/gps-ws.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now gps-ws
-journalctl -u gps-ws -f
+```python
+import asyncio, json, websockets
+
+async def main():
+    async with websockets.connect("ws://megadrone.local:8765") as ws:
+        async for message in ws:
+            print(json.loads(message))
+
+asyncio.run(main())
 ```
-
-### Talk to the other drone
-
-Both Pis must be on the **same Wi-Fi network**. From megadrone:
-
-```bash
-python3 onboard/peer_client.py --peer ws://dexi-114b.local:8765 --self ws://127.0.0.1:8765
-```
-
-```
-[14:38:12] dexi: 32.9939885, -96.7537150  alt 6.0 m  | 3D fix 18 sats  | POSCTL disarmed  | 18.7 m away, bearing 339°, -6.0 m higher
-```
-
-If a drone drops off the network, the client says `NO DATA` after 3 s instead of showing an old
-position, and reconnects automatically. Positions older than 3 s are marked `"stale": true`.
-
-Notes:
-- The server only **sends** data; it ignores anything clients send, so it can't control the drone.
-- Works with ArduPilot (megadrone) and PX4 (DEXI); flight mode names are decoded for both.
-- Port 8765 is separate from DEXI's ROS bridge, so the two don't interfere.
-
