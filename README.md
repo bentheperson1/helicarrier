@@ -1,6 +1,8 @@
 # Megadrone Helicarrier
 
-Repo for any on-board code for the UTD AIAA Helicarrier drone.
+Repo for any on-board code for the UTD AIAA Helicarrier drone. 
+
+For the companion repository of the worker drone, see [worker_mission_control](https://github.com/bentheperson1/worker_mission_control)
 
 ## Contents
 
