@@ -3,7 +3,7 @@ import time
 
 # Connect through mavlink-router (it owns /dev/ttyAMA0). source_system=200
 # avoids clashing with Mission Planner/QGC, which use system ID 255.
-master = mavutil.mavlink_connection("tcp:127.0.0.1:5760", source_system=200)
+master = mavutil.mavlink_connection("tcp:172.20.10.7:5760", source_system=200)
 
 master.wait_heartbeat()
 print("Heartbeat received from system (system %u component %u)" % 
