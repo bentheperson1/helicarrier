@@ -9,7 +9,7 @@ After=network-online.target mavlink-router.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/home/pilot/venv/bin/python /home/pilot/helicarrier/onboard/gps_ws_server.py --name megadrone
+ExecStart=/home/pilot/venv/bin/python /home/pilot/helicarrier/onboard/server.py
 User=pilot
 Restart=always
 RestartSec=3
